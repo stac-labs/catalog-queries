@@ -1,0 +1,208 @@
+--Search for Dupes
+with counts as (
+    select vb_votebuilder_id
+    ,count(distinct ngp_VANID) as num_dupes
+    from (
+        select *, rank() over (partition by ngp_VANID order by ts__input_row asc) as dupe_rank from stac-labs.ia.ia_ngp_senate_match_20220222
+    )
+    where vb_votebuilder_id is not null and dupe_rank = 1
+    group by 1 order by 1
+)
+
+select ngp_VANID as ngp_van_id
+,vb_votebuilder_id as myv_van_id
+,num_dupes
+#Update below with your ngp export table
+from `stac-labs.ia.ia_ngp_senate_match_20220222`
+left join counts using (vb_votebuilder_id)
+where num_dupes > 1
+order by 2,1
+;
+
+--Search for Likely Bad Phones
+select distinct ngp_van_id
+,myv_van_id
+,max(case when MainPhone = 1 then null else MainPhone end) as main_phone
+,max(case when MainPhone = 1 then null else main_phone_suppressed end) as main_phone_suppressed
+,max(case when Preferred_Phone = 1 then null else Preferred_Phone end) as preferred_phone
+,max(case when Preferred_Phone = 1 then null else preferred_phone_suppressed end) as preferred_phone_suppressed
+,max(case when Home_Phone = 1 then null else Home_Phone end) as home_phone
+,max(case when Home_Phone = 1 then null else home_phone_suppressed end) as home_phone_suppressed
+,max(case when Cell_Phone = 1 then null else Cell_Phone end) as cell_phone
+,max(case when Cell_Phone = 1 then null else cell_phone_suppressed end) as cell_phone_suppressed
+from ( 
+    select ngp_van_id
+    ,a.myv_van_id
+    ,a.MainPhone
+    ,case when MainPhone = cast(c.phone_number as int) then true else false end as main_phone_suppressed
+    ,a.Preferred_Phone
+    ,case when Preferred_Phone = cast(c.phone_number as int) then true else false end as preferred_phone_suppressed
+    ,a.Home_Phone
+    ,case when Home_Phone = cast(c.phone_number as int) then true else false end as home_phone_suppressed
+    ,a.Cell_Phone
+    ,case when Cell_Phone = cast(c.phone_number as int) then true else false end as cell_phone_suppressed
+    from (
+        select vb_votebuilder_id as myv_van_id
+        ,ngp_VANID as ngp_van_id
+        ,vb_voterbase_id as voterbase_id
+        ,coalesce(MainPhone, 1) as MainPhone
+        ,coalesce(Preferred_Phone, 1) as Preferred_Phone
+        ,coalesce(Home_Phone, 1) as Home_Phone
+        ,coalesce(Cell_Phone, 1) as Cell_Phone
+        from (
+            select *
+            ,rank() over (partition by ngp_VANID order by ts__input_row asc) as dupe_rank
+            #Update below with your ngp export table
+            from `stac-labs.ia.ia_ngp_senate_match_20220222`
+        )
+        where dupe_rank = 1
+    ) as a
+    join (
+        select c.*, p.voterbase_id
+        #Update below with your state tables
+        from `democrats.analytics_ia.person_phone_derived` as c
+        left join `democrats.analytics_ia.person` as p using (person_id)
+    ) c
+    using (voterbase_id)
+    where is_suppressed
+) as z
+where main_phone_suppressed or preferred_phone_suppressed or home_phone_suppressed or cell_phone_suppressed
+group by 1,2 order by 1,2
+;
+
+--Phone Append (From Micah Originally)
+select ngp_van_id
+,myv_van_id
+,original_main_phone
+,original_preferred_phone
+,original_home_phone
+,original_cell_phone
+,max(case when new_phone_rank = 1 then new_phone else null end) as new_phone1
+,max(case when new_phone_rank = 1 then new_phone_cell_status else null end) as new_phone_cell_status1
+,max(case when new_phone_rank = 2 then new_phone else null end) as new_phone2
+,max(case when new_phone_rank = 2 then new_phone_cell_status else null end) as new_phone_cell_status2
+,max(case when new_phone_rank = 3 then new_phone else null end) as new_phone3
+,max(case when new_phone_rank = 3 then new_phone_cell_status else null end) as new_phone_cell_status3
+,max(case when new_phone_rank = 4 then new_phone else null end) as new_phone4
+,max(case when new_phone_rank = 4 then new_phone_cell_status else null end) as new_phone_cell_status4
+from (
+    select ngp_van_id
+    ,myv_van_id
+    ,case when mainphone = 1 then null else MainPhone end as original_main_phone
+    ,case when Preferred_Phone = 1 then null else Preferred_Phone end as original_preferred_phone
+    ,case when Home_Phone = 1 then null else Home_Phone end as original_home_phone
+    ,case when Cell_Phone = 1 then null else Cell_Phone end as original_cell_phone
+    ,new_phone
+    ,case when cell_status_id = '1' then 'verified cell' when cell_status_id = '2' then 'likely cell' when cell_status_id in ('3','4') then 'not cell' else 'unknown' end as new_phone_cell_status
+    ,rank() over (partition by ngp_van_id order by van_rank asc) AS new_phone_rank
+    from ( 
+        select ngp_van_id
+        ,a.myv_van_id
+        ,a.MainPhone
+        ,a.Preferred_Phone
+        ,a.Home_Phone
+        ,a.Cell_Phone
+        ,case when cast(c.phone_number as int) NOT IN (a.MainPhone, a.Preferred_Phone, a.Home_Phone, a.Cell_Phone) then c.phone_number else null end as new_phone
+        ,case when cast(c.phone_number as int) NOT IN (a.MainPhone, a.Preferred_Phone, a.Home_Phone, a.Cell_Phone) then c.cell_status_id else null end as cell_status_id 
+        ,case when van_rank is null then 99 else van_rank end as van_rank
+        from (
+            select ngp_VANID as ngp_van_id
+            ,vb_votebuilder_id as myv_van_id
+            ,vb_voterbase_id as voterbase_id
+            ,coalesce(MainPhone, 1) as MainPhone
+            ,coalesce(Preferred_Phone, 1) as Preferred_Phone
+            ,coalesce(Home_Phone, 1) as Home_Phone
+            ,coalesce(Cell_Phone, 1) as Cell_Phone
+            from (
+                select *
+                , rank() over (partition by ngp_VANID order by ts__input_row asc) as dupe_rank
+                #Update below with your ngp export table
+                from `stac-labs.ia.ia_ngp_senate_match_20220222`
+            )
+            where dupe_rank = 1
+        ) as a
+        join (
+            select c.*, p.voterbase_id
+            #Update below with your state tables
+            from `democrats.analytics_ia.person_phone_derived` as c
+            left join `democrats.analytics_ia.person` as p using (person_id)
+        ) c
+            using (voterbase_id)
+        where is_suppressed is false
+    ) as z
+    where new_phone is not null 
+)
+group by 1,2,3,4,5,6 order by 1,2;
+
+--New Residential/Voting Address
+select *
+from (
+    select ngp_van_id
+    ,ngp.myv_van_id
+    ,ngp.address as original_address
+    ,ngp.city as original_city
+    ,ngp.State_Province as original_state
+    ,ngp.Zip_Postal as original_zip
+    ,p.voting_street_address as new_address
+    ,p.voting_city as new_city
+    ,'IA' as new_state
+    ,p.voting_zip as new_zip
+    from (
+        select ngp_VANID as ngp_van_id
+        ,vb_votebuilder_id as myv_van_id
+        ,vb_voterbase_id as voterbase_id
+        ,trim(Address) as address
+        ,trim(City) as city
+        ,trim(State_Province) as State_Province
+        ,trim(Zip_Postal) as Zip_Postal
+        from (
+            select *
+            ,rank() over (partition by ngp_VANID order by ts__input_row asc) as dupe_rank
+            #Update below with your ngp export table
+            from `stac-labs.ia.ia_ngp_senate_match_20220222`
+        )
+        where dupe_rank = 1
+    ) ngp
+    #Update below with your state table
+    join `democrats.analytics_ia.person` p using (voterbase_id)
+)
+where original_address<>new_address or original_city<>new_city or original_state<>new_state or original_zip <> new_zip
+order by 1,2
+;
+
+--New Mailing Address
+select *
+from (
+    select ngp_van_id
+    ,ngp.myv_van_id
+    ,ngp.maddress as original_address
+    ,ngp.mcity as original_city
+    ,ngp.mState_Province as original_state
+    ,ngp.mZip_Postal as original_zip
+    ,p.mailing_street_address as new_address
+    ,p.mailing_city as new_city
+    ,p.mailing_state as new_state
+    ,p.mailing_zip as new_zip
+    from (
+        select ngp_VANID as ngp_van_id
+        ,vb_votebuilder_id as myv_van_id
+        ,vb_voterbase_id as voterbase_id
+        ,trim(mAddress) as maddress
+        ,trim(mCity) as mCity
+        ,trim(mState_Province) as mState_Province
+        ,trim(mZip_Postal) as mZip_Postal
+        from (
+            select *
+            ,rank() over (partition by ngp_VANID order by ts__input_row asc) as dupe_rank
+            #Update below with your ngp export table
+            from `stac-labs.ia.ia_ngp_senate_match_20220222`
+        )
+        where dupe_rank = 1
+    ) ngp
+    #Update below with your state table
+    join `democrats.analytics_ia.person` p using (voterbase_id)
+    where mailing_street_address is not null
+)
+where original_address<>new_address or original_city<>new_city or original_state<>new_state or original_zip <> new_zip
+order by 1,2
+;
